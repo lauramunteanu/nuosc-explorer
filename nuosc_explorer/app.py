@@ -107,6 +107,20 @@ def _nice_top(vmax):
     return float(10.0 ** (exp + 1))
 
 
+def _nice_span(lo, hi):
+    """Tidy (bottom, top) for a survival panel.
+
+    Keep the conventional 0 floor when the dip actually gets near zero,
+    otherwise zoom to the band the curves occupy (rounded to 0.05) so a shallow
+    oscillation does not sit squashed against the top of an empty axis."""
+    if lo < 0.15:
+        return 0.0, 1.02
+    pad = 0.08 * (hi - lo) + 1e-3
+    bot = max(0.0, np.floor((lo - pad) * 20) / 20)
+    top = min(1.02, np.ceil((hi + pad) * 20) / 20)
+    return bot, (top if top > bot else bot + 0.05)
+
+
 def _unc_str(u):
     if u is None:
         return ""
@@ -477,8 +491,9 @@ class OscGUI:
         for i, (ln, lb) in enumerate(self.lines):
             nu, nub = data[2 * i], data[2 * i + 1]
             ln.set_data(enp, nu); lb.set_data(enp, nub)
-            if i and max(nu.max(), nub.max()) > self.axes[i].get_ylim()[1]:
-                clipped = True                 # appearance panels autoscale
+            bot, top = self.axes[i].get_ylim()
+            if max(nu.max(), nub.max()) > top or min(nu.min(), nub.min()) < bot:
+                clipped = True                 # every panel autoscales
         self.axes[0].set_xlim(self.emin, self.emax)
         self.title.set_text(
             fr"{self.radio_mo.value_selected} ordering,  "
@@ -492,10 +507,15 @@ class OscGUI:
         self._blit()
 
     def _rescale_app(self):
-        for ax, (ln, lb) in list(zip(self.axes, self.lines))[1:]:
+        chans = panels.channel_list(self.init_flav)
+        for ax, (ln, lb), fout in zip(self.axes, self.lines, chans):
             ys = np.concatenate([ln.get_ydata(), lb.get_ydata()])
-            if ys.size:
-                ax.set_ylim(0, _nice_top(float(np.max(ys)) * 1.12))
+            if not ys.size:
+                continue
+            if fout == self.init_flav:                       # survival
+                ax.set_ylim(*_nice_span(float(ys.min()), float(ys.max())))
+            else:                                            # appearance
+                ax.set_ylim(0, _nice_top(float(ys.max()) * 1.12))
 
     def _on_resize(self, _event=None):
         """Panel labels are sized in points, so they must be refitted when the
@@ -597,6 +617,9 @@ class OscGUI:
             ln.set_data(enp, nu); lb.set_data(enp, nub)
             if i:
                 axes[i].set_ylim(0, _nice_top(float(max(nu.max(), nub.max())) * 1.12))
+            else:
+                axes[i].set_ylim(*_nice_span(float(min(nu.min(), nub.min())),
+                                             float(max(nu.max(), nub.max()))))
         axes[0].set_xlim(self.emin, self.emax)
         axes[0].set_title(fr"{self.radio_mo.value_selected} ordering,  "
                           fr"$\delta_{{CP}}={self.sliders['dcp'].val:.2f}$,  "
@@ -652,11 +675,15 @@ class OscGUI:
             return [ln for pair in lines for ln in pair] + [title]
 
         peaks = [0.0] * len(lines)          # pre-scan so the axes never jump
+        lows = [1.0] * len(lines)
         for k in range(len(order)):
             frame(k)
             for i, (ln, lb) in enumerate(lines):
                 peaks[i] = max(peaks[i], float(ln.get_ydata().max()),
                                float(lb.get_ydata().max()))
+                lows[i] = min(lows[i], float(ln.get_ydata().min()),
+                              float(lb.get_ydata().min()))
+        axes[0].set_ylim(*_nice_span(lows[0], peaks[0]))
         for i in range(1, len(lines)):
             axes[i].set_ylim(0, _nice_top(peaks[i] * 1.12))
 
@@ -831,8 +858,9 @@ class AnalysisWindow:
             ax.plot(enp, Pc, color=col)
             ax.fill_between(enp, np.clip(Pc - sP, 0, None), Pc + sP,
                             color=col, alpha=0.25, lw=0)
-            ax.set_ylim(0, 1.02 if fout == init
-                        else _nice_top(float((Pc + sP).max()) * 1.12))
+            ax.set_ylim(*(_nice_span(float((Pc - sP).min()), float((Pc + sP).max()))
+                          if fout == init
+                          else (0, _nice_top(float((Pc + sP).max()) * 1.12))))
             ax.set_ylabel(fr"$P({panels.TEX[init]}\to{panels.TEX[fout]})$",
                           fontsize=11)
         axes[0].set_xlim(self.gui.emin, self.gui.emax)
