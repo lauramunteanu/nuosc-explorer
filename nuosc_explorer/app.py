@@ -35,6 +35,25 @@ from .style import use_talk_style, FIGDIR
 
 use_talk_style()
 
+
+def _patch_mpl_textbox_resize():
+    """Work around a matplotlib bug (<= 3.11).
+
+    ``TextBox.__init__`` connects ``_resize`` to ``'resize_event'``, but
+    ``_resize`` is wrapped in ``_call_with_reparented_event``, which reads
+    ``event.inaxes`` -- an attribute ``ResizeEvent`` does not have. Resizing a
+    window containing a TextBox therefore raises AttributeError. The real body
+    only calls ``stop_typing()`` and ignores the event, so use the undecorated
+    original (``functools.wraps`` keeps it on ``__wrapped__``). A no-op if
+    upstream drops the decorator.
+    """
+    original = getattr(TextBox._resize, "__wrapped__", None)
+    if original is not None:
+        TextBox._resize = original
+
+
+_patch_mpl_textbox_resize()
+
 NE = 500                      # fixed length -> changing the E range never recompiles
 DENSITY, YE, FPS = 2.6, 0.5, 20
 
