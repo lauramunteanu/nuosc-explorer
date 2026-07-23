@@ -318,8 +318,9 @@ class OscGUI:
 
         self.axes, self.lines = panels.build_panels(self.fig, self.init_flav)
         self.title = self.axes[0].set_title("")
-        self.fig.text(0.085, 0.988, "jaxnu  ·  neutrino oscillation explorer",
-                      fontsize=17, weight="bold", color=INK, va="top")
+        self.header = self.fig.text(
+            0.085, 0.988, "jaxnu  ·  neutrino oscillation explorer",
+            fontsize=17, weight="bold", color=INK, va="top")
 
         # ---- parameter sliders + entry boxes + uncertainties
         self.sliders, self.entries, self.unc, self.fmt = {}, {}, {}, {}
@@ -340,7 +341,7 @@ class OscGUI:
         self.e_lo.on_submit(lambda t: self._on_energy())
         self.e_hi.on_submit(lambda t: self._on_energy())
 
-        self._header(0.705, 0.360, r"Produced $\nu$")
+        self._header(0.705, 0.360, r"Initial $\nu$")
         self.radio_flav = _style_radio(
             self.fig.add_axes([0.710, 0.262, 0.115, 0.090]),
             (r"$\nu_e$", r"$\nu_\mu$", r"$\nu_\tau$"), active=1)
@@ -387,6 +388,7 @@ class OscGUI:
             art.set_animated(True)
         self.fig.canvas.mpl_connect("draw_event", self._on_draw)
         self.fig.canvas.mpl_connect("button_release_event", lambda _e: self._notify())
+        self.fig.canvas.mpl_connect("resize_event", self._on_resize)
         self._apply_preset("PDG", quiet=True)
 
     # ---- listeners -----------------------------------------------------
@@ -494,6 +496,18 @@ class OscGUI:
             ys = np.concatenate([ln.get_ydata(), lb.get_ydata()])
             if ys.size:
                 ax.set_ylim(0, _nice_top(float(np.max(ys)) * 1.12))
+
+    def _on_resize(self, _event=None):
+        """Panel labels are sized in points, so they must be refitted when the
+        window changes; the cached blit background is invalid afterwards."""
+        fs = panels.fit_labels(self.fig, self.axes, self.init_flav)
+        self.title.set_fontsize(max(9.0, min(20.0, fs + 5)))
+        # the header is left-aligned and the title centred, so on a narrow
+        # window the long header runs into it -- shorten rather than overlap
+        self.header.set_fontsize(max(9.0, min(17.0, fs + 3)))
+        self.header.set_text("jaxnu  ·  neutrino oscillation explorer"
+                             if self.fig.get_figwidth() >= 11.5 else "jaxnu")
+        self._bg = None
 
     def _set_flavour(self, label):
         self.init_flav = {r"$\nu_e$": Flavor.E, r"$\nu_\mu$": Flavor.MU,

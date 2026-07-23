@@ -20,6 +20,7 @@ CHAN_COL = {Flavor.MU: (GOLD_D, GOLD_L),
 TEX = {Flavor.MU: r"\nu_\mu", Flavor.E: r"\nu_e", Flavor.TAU: r"\nu_\tau"}
 BAR = {Flavor.MU: r"\bar\nu_\mu", Flavor.E: r"\bar\nu_e", Flavor.TAU: r"\bar\nu_\tau"}
 ALL_FLAVOURS = (Flavor.E, Flavor.MU, Flavor.TAU)
+SHORT = {Flavor.MU: r"\mu", Flavor.E: "e", Flavor.TAU: r"\tau"}
 
 
 def channel_list(init):
@@ -38,6 +39,32 @@ def style_axes(*axes):
         ax.yaxis.label.set_color(INK)
 
 
+def fit_labels(fig, axes, init):
+    """Size the panel labels to the current window.
+
+    The y-label is rotated, so its *height* is the text length: at the default
+    window ``P(nu_mu -> nu_tau)`` is already 0.84 in inside a 1.0 in panel, and
+    shrinking the window makes it spill into the neighbouring panel. Scale the
+    font with the panel height and drop to a compact ``P_ab`` form once the
+    panels get too short for the full arrow notation.
+    """
+    ph_in = fig.get_figheight() * axes[0].get_position().height
+    fs = max(6.0, min(14.0, ph_in * 13.0))
+    compact = ph_in < 0.95
+    for ax, fout in zip(axes, channel_list(init)):
+        sub = f"{SHORT[init]}\\,{SHORT[fout]}"     # thin space: \mu e, not \mue
+        ax.set_ylabel(
+            f"$P_{{{sub}}}$" if compact
+            else fr"$P({TEX[init]} \to {TEX[fout]})$", fontsize=fs)
+        ax.tick_params(labelsize=max(6.0, fs - 2))
+        leg = ax.get_legend()
+        if leg is not None:
+            for t in leg.get_texts():
+                t.set_fontsize(max(6.0, fs - 3))
+    axes[-1].xaxis.label.set_size(max(7.0, fs + 1))
+    return fs
+
+
 def apply_mode(axes, lines, init, fs=13):
     """Re-label/re-colour existing panels for a new produced flavour.
 
@@ -48,11 +75,11 @@ def apply_mode(axes, lines, init, fs=13):
         cd, cl = CHAN_COL[fout]
         ln.set_color(cd); ln.set_label(fr"${TEX[init]} \to {TEX[fout]}$")
         lb.set_color(cl); lb.set_label(fr"${BAR[init]} \to {BAR[fout]}$")
-        ax.set_ylabel(fr"$P({TEX[init]} \to {TEX[fout]})$", fontsize=fs)
         survival = (fout == init)
         ax.set_ylim(0, 1.02 if survival else 0.09)
         ax.legend(frameon=False, ncol=2, fontsize=fs - 3,
                   loc="lower right" if survival else "upper right")
+    fit_labels(axes[0].get_figure(), axes, init)
     return chans
 
 
