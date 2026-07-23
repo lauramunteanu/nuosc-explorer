@@ -364,7 +364,7 @@ class OscGUI:
         self._header(0.850, 0.360, "Ordering")
         self.radio_mo = _style_radio(self.fig.add_axes([0.855, 0.276, 0.125, 0.070]),
                                      ("Normal", "Inverted"))
-        self.radio_mo.on_clicked(lambda _l: self.update())
+        self.radio_mo.on_clicked(lambda _l: self._refresh())
 
         self._header(0.705, 0.196, "Sweep (for GIF)")
         self.radio_sweep = _style_radio(
@@ -412,6 +412,7 @@ class OscGUI:
     def _notify(self):
         self._sync_entries()
         self._rescale_app()
+        self._bg = None
         self.fig.canvas.draw_idle()      # refresh non-animated widgets + re-cache bg
         for fn in list(self._listeners):
             fn()
@@ -517,6 +518,19 @@ class OscGUI:
             else:                                            # appearance
                 ax.set_ylim(0, _nice_top(float(ys.max()) * 1.12))
 
+    def _refresh(self):
+        """Recompute, rescale every panel, and force a full redraw.
+
+        Axis limits live in the cached blit background, so after a rescale the
+        cache must be dropped -- otherwise curves get drawn against a stale
+        frame. Used by every non-drag input (entry boxes, presets, radios);
+        dragging stays on the fast blit path and rescales on mouse-release.
+        """
+        self.update()
+        self._rescale_app()
+        self._bg = None
+        self.fig.canvas.draw_idle()
+
     def _on_resize(self, _event=None):
         """Panel labels are sized in points, so they must be refitted when the
         window changes; the cached blit background is invalid afterwards."""
@@ -533,9 +547,7 @@ class OscGUI:
         self.init_flav = {r"$\nu_e$": Flavor.E, r"$\nu_\mu$": Flavor.MU,
                           r"$\nu_\tau$": Flavor.TAU}[label]
         panels.apply_mode(self.axes, self.lines, self.init_flav)
-        self.update()
-        self._rescale_app()
-        self.fig.canvas.draw_idle()
+        self._refresh()
 
     # ---- entry boxes / presets ----------------------------------------
     def _sync_entries(self):
@@ -556,7 +568,7 @@ class OscGUI:
         s = self.sliders[key]
         s.set_val(min(max(v, s.valmin), s.valmax))     # triggers update()
         self._sync_entries()
-        self.fig.canvas.draw_idle()
+        self._refresh()
 
     def _on_energy(self):
         if self._syncing:
@@ -568,9 +580,9 @@ class OscGUI:
         if hi <= lo or lo < 0:
             self._flash("E range must satisfy 0 <= min < max"); return
         self.emin, self.emax = lo, hi
-        self.update()
-        self.fig.canvas.draw_idle()
-        self._notify()
+        self._refresh()
+        for fn in list(self._listeners):
+            fn()
 
     def _apply_preset(self, name, quiet=False):
         for key, (val, unc) in PRESETS[name].items():
@@ -580,10 +592,9 @@ class OscGUI:
             if key in self.unc:
                 self.unc[key].set_text(_unc_str(unc))
         self._sync_entries()
-        self.update()
+        self._refresh()
         if not quiet:
             self._flash(f"loaded {name} values")
-        self.fig.canvas.draw_idle()
 
     def open_analysis(self, *_):
         if self.analysis is not None and plt.fignum_exists(self.analysis.fig.number):
