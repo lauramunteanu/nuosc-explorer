@@ -13,8 +13,12 @@ open an optional analysis window that uses jaxnu's automatic differentiation.
 ## Features
 
 **Main window**
-- Live curves for `νμ→νμ`, `ν̄μ→ν̄μ` (gold) and `νμ→νe`, `ν̄μ→ν̄e` (blue),
-  in constant-density matter.
+- **Produced flavour** toggle (`νe` / `νμ` / `ντ`); all three final states are
+  always shown, one panel each — survival first, then the two appearance
+  channels, for both neutrinos and antineutrinos.
+- Colours follow the **detected** flavour, so gold always means muon-flavour,
+  blue electron-flavour and rose tau-flavour, whichever flavour was produced.
+- Constant-density matter throughout.
 - Sliders **and** typed entry boxes for `sin²θ12, sin²θ13, sin²θ23, Δm²21,
   Δm²32, δCP`, the baseline `L`, and the neutrino energy range.
 - Matter **NSI** couplings `ε_ee, ε_eμ, ε_eτ, ε_μτ` (all zero → standard
@@ -22,7 +26,7 @@ open an optional analysis window that uses jaxnu's automatic differentiation.
 - **Presets** (T2K / NOvA / PDG / NuFIT) that load central values *and* show
   each parameter's ± uncertainty.
 - Normal / Inverted ordering toggle.
-- Appearance panel **autoscales** in *y*; the energy range controls *x*.
+- Appearance panels **autoscale** in *y*; the energy range controls *x*.
 - **Save PNG** (300-dpi PNG + vector PDF) and **Save GIF** (sweeps a chosen
   parameter, including NSI couplings and the mass ordering).
 

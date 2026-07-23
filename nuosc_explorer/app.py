@@ -32,6 +32,8 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 from jaxnu import probability_constant, OscParams, NSI, Flavor
 
 from .style import use_talk_style, FIGDIR
+from . import panels
+from .panels import GOLD_D, GOLD_L, BLUE_D, BLUE_L, ROSE_D, ROSE_L
 
 use_talk_style()
 
@@ -64,8 +66,6 @@ TRACK    = "#D6DAE1"
 ACCENT   = "#4C7FB8"
 INK      = "#2B2F36"
 MUTED    = "#6B7280"
-GOLD_D, GOLD_L = "#9C6404", "#E0A93F"     # numu / numubar
-BLUE_D, BLUE_L = "#1B5A85", "#6FA8CE"     # nue  / nuebar
 
 # ===========================================================================
 # Published parameter sets: value and (+sigma, -sigma), in slider units
@@ -114,19 +114,17 @@ def _unc_str(u):
     return f"±{p:g}" if abs(p - m) < 1e-12 else f"+{p:g} −{m:g}"
 
 
-# jit once per channel; params/L/nsi/E are all traced -> no recompile.
-_dis = jax.jit(lambda p, L, nsi, e: probability_constant(
-    p, e, L, density=DENSITY, ye=YE, anti=False, nsi=nsi,
-    flavor_in=Flavor.MU, flavor_out=Flavor.MU))
-_dis_bar = jax.jit(lambda p, L, nsi, e: probability_constant(
-    p, e, L, density=DENSITY, ye=YE, anti=True, nsi=nsi,
-    flavor_in=Flavor.MU, flavor_out=Flavor.MU))
-_app_nu = jax.jit(lambda p, L, nsi, e: probability_constant(
-    p, e, L, density=DENSITY, ye=YE, anti=False, nsi=nsi,
-    flavor_in=Flavor.MU, flavor_out=Flavor.E))
-_app_nub = jax.jit(lambda p, L, nsi, e: probability_constant(
-    p, e, L, density=DENSITY, ye=YE, anti=True, nsi=nsi,
-    flavor_in=Flavor.MU, flavor_out=Flavor.E))
+_CHAN = {}
+
+
+def _chan(fin, fout, anti):
+    """Cached jitted P(fin -> fout); params/L/nsi/E traced -> no recompile."""
+    key = (fin, fout, anti)
+    if key not in _CHAN:
+        _CHAN[key] = jax.jit(lambda p, L, nsi, e: probability_constant(
+            p, e, L, density=DENSITY, ye=YE, anti=anti, nsi=nsi,
+            flavor_in=fin, flavor_out=fout))
+    return _CHAN[key]
 
 
 def _theta(sin2):
@@ -145,12 +143,15 @@ def build_nsi(ee, emu, etau, mutau):
                eps_etau=float(etau), eps_mutau=float(mutau))
 
 
-def compute(params, L, nsi, e):
+def compute(params, L, nsi, e, init):
+    """(nu, nubar) arrays for each channel of `init`, survival first."""
     L = float(L)
-    return (np.asarray(_dis(params, L, nsi, e).block_until_ready()),
-            np.asarray(_dis_bar(params, L, nsi, e).block_until_ready()),
-            np.asarray(_app_nu(params, L, nsi, e).block_until_ready()),
-            np.asarray(_app_nub(params, L, nsi, e).block_until_ready()))
+    out = []
+    for fout in panels.channel_list(init):
+        for anti in (False, True):
+            out.append(np.asarray(
+                _chan(init, fout, anti)(params, L, nsi, e).block_until_ready()))
+    return out
 
 
 # =====================================================================
@@ -205,7 +206,8 @@ CONTOUR_RANGE = {
 }
 
 
-def contour_data(base, L, nsi, e, xk, yk, x0, y0, na=41, nb=41):
+def contour_data(base, L, nsi, e, xk, yk, x0, y0, na=41, nb=41,
+                 init=Flavor.MU, other=Flavor.E):
     """Asimov chi^2 over any two parameters.
 
     ILLUSTRATIVE ONLY. The "data" are the probabilities at the current slider
@@ -219,13 +221,13 @@ def contour_data(base, L, nsi, e, xk, yk, x0, y0, na=41, nb=41):
     idx = jnp.arange(0, NE, max(1, NE // 25))          # ~25 "measurements"
     erra, errd = 0.010, 0.050
     truth = _osc_from(base, **{xk: x0, yk: y0})
-    d_app = _P(truth, L, nsi, e, False, Flavor.MU, Flavor.E)[idx]
-    d_dis = _P(truth, L, nsi, e, False, Flavor.MU, Flavor.MU)[idx]
+    d_app = _P(truth, L, nsi, e, False, init, other)[idx]
+    d_dis = _P(truth, L, nsi, e, False, init, init)[idx]
 
     def chi2(xv, yv):
         p = _osc_from(base, **{xk: xv, yk: yv})
-        pa = _P(p, L, nsi, e, False, Flavor.MU, Flavor.E)[idx]
-        pd = _P(p, L, nsi, e, False, Flavor.MU, Flavor.MU)[idx]
+        pa = _P(p, L, nsi, e, False, init, other)[idx]
+        pd = _P(p, L, nsi, e, False, init, init)[idx]
         return jnp.sum((pa - d_app) ** 2) / erra ** 2 \
             + jnp.sum((pd - d_dis) ** 2) / errd ** 2
 
@@ -256,11 +258,11 @@ def contour_data(base, L, nsi, e, xk, yk, x0, y0, na=41, nb=41):
 
 
 # ---------------------------------------------------------------- widgets
-def _style_radio(ax, labels, fontsize=13):
+def _style_radio(ax, labels, fontsize=13, active=0):
     ax.set_facecolor(GROUP_BG)
     for sp in ax.spines.values():
         sp.set_visible(False)
-    r = RadioButtons(ax, labels, active=0, activecolor=ACCENT)
+    r = RadioButtons(ax, labels, active=active, activecolor=ACCENT)
     for t in r.labels:
         t.set_fontsize(fontsize); t.set_color(INK)
     return r
@@ -273,30 +275,6 @@ def _style_entry(ax, initial):
     for sp in ax.spines.values():
         sp.set_color("#C7CCD4")
     return tb
-
-
-def _plot_axes(fig, top, height, gap):
-    ax_t = fig.add_axes([0.12, top, 0.83, height])
-    ax_b = fig.add_axes([0.12, top - height - gap, 0.83, height], sharex=ax_t)
-    (l_dis,) = ax_t.plot([], [], color=GOLD_D, label=r"$\nu_\mu \to \nu_\mu$")
-    (l_disbar,) = ax_t.plot([], [], color=GOLD_L, ls="--",
-                            label=r"$\bar\nu_\mu \to \bar\nu_\mu$")
-    ax_t.set_ylabel(r"$P(\nu_\mu \to \nu_\mu)$"); ax_t.set_ylim(0, 1.02)
-    ax_t.legend(frameon=False, loc="lower right", fontsize=12, ncol=2)
-    plt.setp(ax_t.get_xticklabels(), visible=False)
-    (l_nu,)  = ax_b.plot([], [], color=BLUE_D, label=r"$\nu_\mu \to \nu_e$")
-    (l_nub,) = ax_b.plot([], [], color=BLUE_L, ls="--", label=r"$\bar\nu_\mu \to \bar\nu_e$")
-    ax_b.set_ylabel(r"$P(\nu_\mu \to \nu_e)$"); ax_b.set_ylim(0, 0.09)
-    ax_b.set_xlabel(r"$E_\nu$  (GeV)")
-    ax_b.legend(frameon=False, loc="upper right", fontsize=12, ncol=2)
-    for ax in (ax_t, ax_b):
-        ax.set_facecolor("white")
-        ax.grid(color="#DDE1E7", lw=0.8, alpha=1.0)
-        for sp in ax.spines.values():
-            sp.set_color("#C7CCD4")
-        ax.tick_params(colors=MUTED, labelcolor=INK)
-        ax.xaxis.label.set_color(INK); ax.yaxis.label.set_color(INK)
-    return ax_t, ax_b, l_dis, l_disbar, l_nu, l_nub
 
 
 class OscGUI:
@@ -321,7 +299,8 @@ class OscGUI:
         self._listeners, self._syncing = [], False
         self.analysis = None
         self.emin, self.emax = 0.05, 3.0
-        self.fig = plt.figure(figsize=(13.0, 12.0), dpi=100, facecolor=UI_BG)
+        self.init_flav = Flavor.MU
+        self.fig = plt.figure(figsize=(13.5, 13.0), dpi=100, facecolor=UI_BG)
 
         self.bg = self.fig.add_axes([0, 0, 1, 1], zorder=-1)
         self.bg.axis("off"); self.bg.patch.set_visible(False)
@@ -337,58 +316,63 @@ class OscGUI:
                 boxstyle="round,pad=0.004,rounding_size=0.012",
                 linewidth=0, facecolor=GROUP_BG, zorder=0))
 
-        (self.ax_t, self.ax_b, self.l_dis, self.l_disbar,
-         self.l_nu, self.l_nub) = _plot_axes(self.fig, top=0.79, height=0.145, gap=0.015)
-        self.title = self.ax_t.set_title("")
+        self.axes, self.lines = panels.build_panels(self.fig, self.init_flav)
+        self.title = self.axes[0].set_title("")
         self.fig.text(0.085, 0.988, "jaxnu  ·  neutrino oscillation explorer",
                       fontsize=17, weight="bold", color=INK, va="top")
 
         # ---- parameter sliders + entry boxes + uncertainties
         self.sliders, self.entries, self.unc, self.fmt = {}, {}, {}, {}
-        self._header(0.10, 0.552, "Oscillation parameters")
-        self._add_sliders(self.STD, x=0.26, w=0.175, y0=0.510,
+        self._header(0.10, 0.607, "Oscillation parameters")
+        self._add_sliders(self.STD, x=0.26, w=0.175, y0=0.570,
                           ex=0.447, ew=0.058, unc_x=0.515)
-        self._header(0.71, 0.552, r"Matter NSI  $\epsilon_{\alpha\beta}$")
-        self._add_sliders(self.NSI, x=0.80, w=0.085, y0=0.510,
+        self._header(0.71, 0.607, r"Matter NSI  $\epsilon_{\alpha\beta}$")
+        self._add_sliders(self.NSI, x=0.80, w=0.085, y0=0.570,
                           ex=0.895, ew=0.055, unc_x=None)
 
         # ---- energy range row (bottom of the parameter card)
-        self.fig.text(0.255, 0.187, r"$E_\nu$ range [GeV]", ha="right", va="bottom",
+        self.fig.text(0.255, 0.247, r"$E_\nu$ range [GeV]", ha="right", va="bottom",
                       fontsize=13, color=INK)
-        self.e_lo = _style_entry(self.fig.add_axes([0.26, 0.180, 0.058, 0.026]),
+        self.e_lo = _style_entry(self.fig.add_axes([0.26, 0.240, 0.058, 0.026]),
                                  f"{self.emin:g}")
-        self.e_hi = _style_entry(self.fig.add_axes([0.330, 0.180, 0.058, 0.026]),
+        self.e_hi = _style_entry(self.fig.add_axes([0.330, 0.240, 0.058, 0.026]),
                                  f"{self.emax:g}")
         self.e_lo.on_submit(lambda t: self._on_energy())
         self.e_hi.on_submit(lambda t: self._on_energy())
 
-        self._header(0.71, 0.302, "Ordering")
-        self.radio_mo = _style_radio(self.fig.add_axes([0.72, 0.225, 0.20, 0.068]),
+        self._header(0.705, 0.360, r"Produced $\nu$")
+        self.radio_flav = _style_radio(
+            self.fig.add_axes([0.710, 0.262, 0.115, 0.090]),
+            (r"$\nu_e$", r"$\nu_\mu$", r"$\nu_\tau$"), active=1)
+        self.radio_flav.on_clicked(self._set_flavour)
+
+        self._header(0.850, 0.360, "Ordering")
+        self.radio_mo = _style_radio(self.fig.add_axes([0.855, 0.276, 0.125, 0.070]),
                                      ("Normal", "Inverted"))
         self.radio_mo.on_clicked(lambda _l: self.update())
 
-        self._header(0.71, 0.172, "Sweep (for GIF)")
+        self._header(0.705, 0.196, "Sweep (for GIF)")
         self.radio_sweep = _style_radio(
-            self.fig.add_axes([0.72, 0.018, 0.20, 0.145]),
+            self.fig.add_axes([0.712, 0.020, 0.20, 0.165]),
             (r"$\delta_{CP}$", r"$\sin^2\theta_{23}$", r"$\Delta m^2_{32}$",
              r"$\epsilon_{e\mu}$", r"$\epsilon_{e\tau}$", "Ordering"))
 
         # ---- presets
-        self.fig.text(0.098, 0.095, "Presets", fontsize=13, weight="bold", color=INK)
+        self.fig.text(0.098, 0.168, "Presets", fontsize=13, weight="bold", color=INK)
         self.preset_btns = []
         for i, name in enumerate(PRESETS):
-            b = self._button([0.175 + i * 0.113, 0.088, 0.103, 0.038], name)
+            b = self._button([0.175 + i * 0.113, 0.115, 0.103, 0.040], name)
             b.on_clicked(lambda _e, n=name: self._apply_preset(n))
             self.preset_btns.append(b)
 
         # ---- actions
-        self.btn_png = self._button([0.098, 0.022, 0.125, 0.038], "Save PNG")
+        self.btn_png = self._button([0.098, 0.048, 0.125, 0.040], "Save PNG")
         self.btn_png.on_clicked(self.save_png)
-        self.btn_gif = self._button([0.238, 0.022, 0.125, 0.038], "Save GIF")
+        self.btn_gif = self._button([0.238, 0.048, 0.125, 0.040], "Save GIF")
         self.btn_gif.on_clicked(self.save_gif)
-        self.btn_an = self._button([0.378, 0.022, 0.135, 0.038], "Analysis")
+        self.btn_an = self._button([0.378, 0.048, 0.135, 0.040], "Analysis")
         self.btn_an.on_clicked(self.open_analysis)
-        self.status = self.fig.text(0.525, 0.036, "", ha="left", fontsize=11,
+        self.status = self.fig.text(0.098, 0.020, "", ha="left", fontsize=11,
                                     color=MUTED)
 
         # ---- blitting: only the curves + slider handles redraw per event
@@ -396,7 +380,7 @@ class OscGUI:
             s.drawon = False
             s.valtext.set_visible(False)          # the entry box shows the value
         self._bg = None
-        self._anim = [self.l_dis, self.l_disbar, self.l_nu, self.l_nub, self.title]
+        self._anim = [ln for pair in self.lines for ln in pair] + [self.title]
         for s in self.sliders.values():
             self._anim += [s.poly, s._handle]
         for art in self._anim:
@@ -486,28 +470,38 @@ class OscGUI:
         params, L, nsi = self._state()
         e = self.energy()
         enp = np.asarray(e)
-        dis, dis_bar, nu, nub = compute(params, L, nsi, e)
-        self.l_dis.set_data(enp, dis)
-        self.l_disbar.set_data(enp, dis_bar)
-        self.l_nu.set_data(enp, nu)
-        self.l_nub.set_data(enp, nub)
-        self.ax_t.set_xlim(self.emin, self.emax)
+        data = compute(params, L, nsi, e, self.init_flav)
+        clipped = False
+        for i, (ln, lb) in enumerate(self.lines):
+            nu, nub = data[2 * i], data[2 * i + 1]
+            ln.set_data(enp, nu); lb.set_data(enp, nub)
+            if i and max(nu.max(), nub.max()) > self.axes[i].get_ylim()[1]:
+                clipped = True                 # appearance panels autoscale
+        self.axes[0].set_xlim(self.emin, self.emax)
         self.title.set_text(
             fr"{self.radio_mo.value_selected} ordering,  "
             fr"$\delta_{{CP}}={self.sliders['dcp'].val:.2f}$,  "
             fr"$L={self.sliders['L'].val:.0f}$ km")
-        # appearance panel autoscales; if the curve would clip we must redraw the
-        # axes now (limits live in the blit background), otherwise blit is enough.
-        if max(nu.max(), nub.max()) > self.ax_b.get_ylim()[1]:
+        # axis limits live in the blit background, so a rescale needs a full draw
+        if clipped:
             self._rescale_app()
             self.fig.canvas.draw_idle()
             return
         self._blit()
 
     def _rescale_app(self):
-        ys = np.concatenate([self.l_nu.get_ydata(), self.l_nub.get_ydata()])
-        if ys.size:
-            self.ax_b.set_ylim(0, _nice_top(float(np.max(ys)) * 1.12))
+        for ax, (ln, lb) in list(zip(self.axes, self.lines))[1:]:
+            ys = np.concatenate([ln.get_ydata(), lb.get_ydata()])
+            if ys.size:
+                ax.set_ylim(0, _nice_top(float(np.max(ys)) * 1.12))
+
+    def _set_flavour(self, label):
+        self.init_flav = {r"$\nu_e$": Flavor.E, r"$\nu_\mu$": Flavor.MU,
+                          r"$\nu_\tau$": Flavor.TAU}[label]
+        panels.apply_mode(self.axes, self.lines, self.init_flav)
+        self.update()
+        self._rescale_app()
+        self.fig.canvas.draw_idle()
 
     # ---- entry boxes / presets ----------------------------------------
     def _sync_entries(self):
@@ -578,18 +572,21 @@ class OscGUI:
         self._flash(f"saved {out.name}.png / .pdf")
 
     def _panels_only(self):
-        fig = plt.figure(figsize=(8.0, 7.6), dpi=100)
-        ax_t, ax_b, l_dis, l_disbar, l_nu, l_nub = _plot_axes(fig, 0.70, 0.26, 0.02)
+        fig = plt.figure(figsize=(8.4, 9.2), dpi=100)
+        axes, lines = panels.build_panels(fig, self.init_flav,
+                                          top=0.92, bot=0.09, fs=14)
         params, L, nsi = self._state()
         e = self.energy(); enp = np.asarray(e)
-        dis, dis_bar, nu, nub = compute(params, L, nsi, e)
-        l_dis.set_data(enp, dis); l_disbar.set_data(enp, dis_bar)
-        l_nu.set_data(enp, nu); l_nub.set_data(enp, nub)
-        ax_t.set_xlim(self.emin, self.emax)
-        ax_b.set_ylim(0, _nice_top(float(max(nu.max(), nub.max())) * 1.12))
-        ax_t.set_title(fr"{self.radio_mo.value_selected} ordering,  "
-                       fr"$\delta_{{CP}}={self.sliders['dcp'].val:.2f}$,  "
-                       fr"$L={self.sliders['L'].val:.0f}$ km")
+        data = compute(params, L, nsi, e, self.init_flav)
+        for i, (ln, lb) in enumerate(lines):
+            nu, nub = data[2 * i], data[2 * i + 1]
+            ln.set_data(enp, nu); lb.set_data(enp, nub)
+            if i:
+                axes[i].set_ylim(0, _nice_top(float(max(nu.max(), nub.max())) * 1.12))
+        axes[0].set_xlim(self.emin, self.emax)
+        axes[0].set_title(fr"{self.radio_mo.value_selected} ordering,  "
+                          fr"$\delta_{{CP}}={self.sliders['dcp'].val:.2f}$,  "
+                          fr"$L={self.sliders['L'].val:.0f}$ km")
         return fig
 
     def _sweep_plan(self):
@@ -618,10 +615,11 @@ class OscGUI:
         if key == "ordering":
             order = [0] * 24 + [1] * 24
 
-        fig = plt.figure(figsize=(8.0, 7.6), dpi=100)
-        ax_t, ax_b, l_dis, l_disbar, l_nu, l_nub = _plot_axes(fig, 0.70, 0.26, 0.02)
-        ax_t.set_xlim(self.emin, self.emax)
-        title = ax_t.set_title("")
+        fig = plt.figure(figsize=(8.4, 9.2), dpi=100)
+        axes, lines = panels.build_panels(fig, self.init_flav,
+                                          top=0.92, bot=0.09, fs=14)
+        axes[0].set_xlim(self.emin, self.emax)
+        title = axes[0].set_title("")
         e = self.energy(); enp = np.asarray(e)
 
         def frame(k):
@@ -633,18 +631,20 @@ class OscGUI:
                 _, L, nsi = self._state()
             else:
                 params, L, nsi = self._state(**{key: v})
-            dis, dis_bar, nu, nub = compute(params, L, nsi, e)
-            l_dis.set_data(enp, dis); l_disbar.set_data(enp, dis_bar)
-            l_nu.set_data(enp, nu); l_nub.set_data(enp, nub)
+            data = compute(params, L, nsi, e, self.init_flav)
+            for i, (ln, lb) in enumerate(lines):
+                ln.set_data(enp, data[2 * i]); lb.set_data(enp, data[2 * i + 1])
             title.set_text(labeller(v))
-            return l_dis, l_disbar, l_nu, l_nub, title
+            return [ln for pair in lines for ln in pair] + [title]
 
-        peak = 0.0                      # pre-scan so the axis never jumps
+        peaks = [0.0] * len(lines)          # pre-scan so the axes never jump
         for k in range(len(order)):
             frame(k)
-            peak = max(peak, float(l_nu.get_ydata().max()),
-                       float(l_nub.get_ydata().max()))
-        ax_b.set_ylim(0, _nice_top(peak * 1.12))
+            for i, (ln, lb) in enumerate(lines):
+                peaks[i] = max(peaks[i], float(ln.get_ydata().max()),
+                               float(lb.get_ydata().max()))
+        for i in range(1, len(lines)):
+            axes[i].set_ylim(0, _nice_top(peaks[i] * 1.12))
 
         self._flash("rendering GIF...")
         anim = FuncAnimation(fig, frame, frames=len(order), interval=1000 / FPS,
@@ -742,15 +742,22 @@ class AnalysisWindow:
             ax.tick_params(colors=MUTED, labelcolor=INK)
             ax.xaxis.label.set_color(INK); ax.yaxis.label.set_color(INK)
 
-    def _two_panels(self):
+    def _n_panels(self, n):
         self._clear()
-        l, b, w, h = self._axarea
-        ax1 = self.fig.add_axes([l, b + h * 0.53, w, h * 0.45])
-        ax2 = self.fig.add_axes([l, b, w, h * 0.45], sharex=ax1)
-        plt.setp(ax1.get_xticklabels(), visible=False)
-        self._style(ax1, ax2)
-        self._axes = [ax1, ax2]
-        return ax1, ax2
+        l, b, h_tot = self._axarea[0], self._axarea[1], self._axarea[3]
+        w = self._axarea[2]
+        gap = 0.03
+        h = (h_tot - gap * (n - 1)) / n
+        axes = []
+        for i in range(n):
+            ax = self.fig.add_axes([l, b + h_tot - h - i * (h + gap), w, h],
+                                   sharex=axes[0] if axes else None)
+            axes.append(ax)
+        for ax in axes[:-1]:
+            plt.setp(ax.get_xticklabels(), visible=False)
+        self._style(*axes)
+        self._axes = axes
+        return axes
 
     def _one_panel(self):
         self._clear()
@@ -778,19 +785,20 @@ class AnalysisWindow:
         base, L, nsi = self.gui._state()
         e = self.gui.energy(); enp = np.asarray(e)
         x0 = self.gui._vals()[self.sens_param]
-        ax1, ax2 = self._two_panels()
-        chans = [(False, Flavor.MU, Flavor.MU, r"\nu_\mu\to\nu_\mu", GOLD_D),
-                 (False, Flavor.MU, Flavor.E,  r"\nu_\mu\to\nu_e",  BLUE_D)]
-        for ax, (anti, fin, fout, lbl, col) in zip((ax1, ax2), chans):
-            d = np.asarray(sens_jac(self.sens_param, anti, fin, fout)(
+        init = self.gui.init_flav
+        chans = panels.channel_list(init)
+        axes = self._n_panels(len(chans))
+        for ax, fout in zip(axes, chans):
+            d = np.asarray(sens_jac(self.sens_param, False, init, fout)(
                 float(x0), base, float(L), nsi, e))
-            ax.plot(enp, d, color=col)
+            ax.plot(enp, d, color=panels.CHAN_COL[fout][0])
             ax.axhline(0, color="0.6", lw=0.8)
-            ax.set_ylabel(fr"$\partial P({lbl})/\partial${self.PLAB[self.sens_param]}",
-                          fontsize=13)
-        ax1.set_xlim(self.gui.emin, self.gui.emax)
-        ax2.set_xlabel(r"$E_\nu$  (GeV)")
-        ax1.set_title(f"Sensitivity to {self.PLAB[self.sens_param]}")
+            ax.set_ylabel(
+                fr"$\partial P({panels.TEX[init]}\to{panels.TEX[fout]})"
+                fr"/\partial${self.PLAB[self.sens_param]}", fontsize=11)
+        axes[0].set_xlim(self.gui.emin, self.gui.emax)
+        axes[-1].set_xlabel(r"$E_\nu$  (GeV)")
+        axes[0].set_title(f"Sensitivity to {self.PLAB[self.sens_param]}")
 
     def _draw_band(self):
         base, L, nsi = self.gui._state()
@@ -798,29 +806,34 @@ class AnalysisWindow:
         v = self.gui._vals()
         vec = jnp.array([v["s13"], v["s23"], v["dm32"], v["dcp"]])
         sig = np.array([self.SIGMA[k] for k in ("s13", "s23", "dm32", "dcp")])
-        ax1, ax2 = self._two_panels()
-        chans = [(False, Flavor.MU, Flavor.MU, r"\nu_\mu\to\nu_\mu", GOLD_D, (0, 1.02)),
-                 (False, Flavor.MU, Flavor.E,  r"\nu_\mu\to\nu_e",  BLUE_D, None)]
-        for ax, (anti, fin, fout, lbl, col, ylim) in zip((ax1, ax2), chans):
-            J = np.asarray(band_jac(anti, fin, fout)(vec, base, float(L), nsi, e))
-            Pc = np.asarray(_P(base, float(L), nsi, e, anti, fin, fout))
+        init = self.gui.init_flav
+        chans = panels.channel_list(init)
+        axes = self._n_panels(len(chans))
+        for i, (ax, fout) in enumerate(zip(axes, chans)):
+            col = panels.CHAN_COL[fout][0]
+            J = np.asarray(band_jac(False, init, fout)(vec, base, float(L), nsi, e))
+            Pc = np.asarray(_P(base, float(L), nsi, e, False, init, fout))
             sP = np.sqrt((J ** 2) @ (sig ** 2))
             ax.plot(enp, Pc, color=col)
             ax.fill_between(enp, np.clip(Pc - sP, 0, None), Pc + sP,
                             color=col, alpha=0.25, lw=0)
-            ax.set_ylim(*(ylim or (0, _nice_top(float((Pc + sP).max()) * 1.12))))
-            ax.set_ylabel(fr"$P({lbl})$", fontsize=13)
-        ax1.set_xlim(self.gui.emin, self.gui.emax)
-        ax2.set_xlabel(r"$E_\nu$  (GeV)")
-        ax1.set_title(r"$\pm1\sigma$ band (Jacobian propagation)")
+            ax.set_ylim(0, 1.02 if fout == init
+                        else _nice_top(float((Pc + sP).max()) * 1.12))
+            ax.set_ylabel(fr"$P({panels.TEX[init]}\to{panels.TEX[fout]})$",
+                          fontsize=11)
+        axes[0].set_xlim(self.gui.emin, self.gui.emax)
+        axes[-1].set_xlabel(r"$E_\nu$  (GeV)")
+        axes[0].set_title(r"$\pm1\sigma$ band (Jacobian propagation)")
 
     def _draw_contour(self):
         base, L, nsi = self.gui._state()
         e = self.gui.energy()
         v = self.gui._vals()
         xk, yk = self.pair
+        ch = panels.channel_list(self.gui.init_flav)
         xs, ys, D, truth, fit = contour_data(base, float(L), nsi, e,
-                                             xk, yk, v[xk], v[yk])
+                                             xk, yk, v[xk], v[yk],
+                                             init=ch[0], other=ch[1])
         xlab, _, _, xsc = CONTOUR_RANGE[xk]
         ylab, _, _, ysc = CONTOUR_RANGE[yk]
         ax = self._one_panel()
