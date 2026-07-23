@@ -95,7 +95,7 @@ PRESETS = {
 }
 
 
-def _nice_top(vmax):
+def _nice_top(vmax, cap=1.02):
     """Round a maximum up to a tidy axis limit (1 / 1.5 / 2 / 3 / 5 / 7.5 x 10^n)."""
     if not np.isfinite(vmax) or vmax <= 0:
         return 0.01
@@ -103,8 +103,19 @@ def _nice_top(vmax):
     frac = vmax / 10.0 ** exp
     for m in (1, 1.5, 2, 3, 5, 7.5):
         if frac <= m:
-            return float(m * 10.0 ** exp)
-    return float(10.0 ** (exp + 1))
+            return min(cap, float(m * 10.0 ** exp))
+    return min(cap, float(10.0 ** (exp + 1)))
+
+
+def _finite(*arrays):
+    """Concatenate and drop non-finite samples.
+
+    P is undefined at E = 0 (the oscillation phase divides by E) and jaxnu
+    returns NaN there. NaN poisons min()/max() and every comparison against it
+    is False, which silently defeats both the autoscaling and the clip check.
+    """
+    ys = np.concatenate([np.asarray(a).ravel() for a in arrays])
+    return ys[np.isfinite(ys)]
 
 
 def _nice_span(lo, hi):
@@ -113,6 +124,8 @@ def _nice_span(lo, hi):
     Keep the conventional 0 floor when the dip actually gets near zero,
     otherwise zoom to the band the curves occupy (rounded to 0.05) so a shallow
     oscillation does not sit squashed against the top of an empty axis."""
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return 0.0, 1.02
     if lo < 0.15:
         return 0.0, 1.02
     pad = 0.08 * (hi - lo) + 1e-3
@@ -492,8 +505,9 @@ class OscGUI:
         for i, (ln, lb) in enumerate(self.lines):
             nu, nub = data[2 * i], data[2 * i + 1]
             ln.set_data(enp, nu); lb.set_data(enp, nub)
+            ys = _finite(nu, nub)
             bot, top = self.axes[i].get_ylim()
-            if max(nu.max(), nub.max()) > top or min(nu.min(), nub.min()) < bot:
+            if ys.size and (ys.max() > top or ys.min() < bot):
                 clipped = True                 # every panel autoscales
         self.axes[0].set_xlim(self.emin, self.emax)
         self.title.set_text(
@@ -510,7 +524,7 @@ class OscGUI:
     def _rescale_app(self):
         chans = panels.channel_list(self.init_flav)
         for ax, (ln, lb), fout in zip(self.axes, self.lines, chans):
-            ys = np.concatenate([ln.get_ydata(), lb.get_ydata()])
+            ys = _finite(ln.get_ydata(), lb.get_ydata())
             if not ys.size:
                 continue
             if fout == self.init_flav:                       # survival
@@ -626,11 +640,13 @@ class OscGUI:
         for i, (ln, lb) in enumerate(lines):
             nu, nub = data[2 * i], data[2 * i + 1]
             ln.set_data(enp, nu); lb.set_data(enp, nub)
+            ys = _finite(nu, nub)
+            if not ys.size:
+                continue
             if i:
-                axes[i].set_ylim(0, _nice_top(float(max(nu.max(), nub.max())) * 1.12))
+                axes[i].set_ylim(0, _nice_top(float(ys.max()) * 1.12))
             else:
-                axes[i].set_ylim(*_nice_span(float(min(nu.min(), nub.min())),
-                                             float(max(nu.max(), nub.max()))))
+                axes[i].set_ylim(*_nice_span(float(ys.min()), float(ys.max())))
         axes[0].set_xlim(self.emin, self.emax)
         axes[0].set_title(fr"{self.radio_mo.value_selected} ordering,  "
                           fr"$\delta_{{CP}}={self.sliders['dcp'].val:.2f}$,  "
@@ -690,10 +706,10 @@ class OscGUI:
         for k in range(len(order)):
             frame(k)
             for i, (ln, lb) in enumerate(lines):
-                peaks[i] = max(peaks[i], float(ln.get_ydata().max()),
-                               float(lb.get_ydata().max()))
-                lows[i] = min(lows[i], float(ln.get_ydata().min()),
-                              float(lb.get_ydata().min()))
+                ys = _finite(ln.get_ydata(), lb.get_ydata())
+                if ys.size:
+                    peaks[i] = max(peaks[i], float(ys.max()))
+                    lows[i] = min(lows[i], float(ys.min()))
         axes[0].set_ylim(*_nice_span(lows[0], peaks[0]))
         for i in range(1, len(lines)):
             axes[i].set_ylim(0, _nice_top(peaks[i] * 1.12))
@@ -869,9 +885,11 @@ class AnalysisWindow:
             ax.plot(enp, Pc, color=col)
             ax.fill_between(enp, np.clip(Pc - sP, 0, None), Pc + sP,
                             color=col, alpha=0.25, lw=0)
-            ax.set_ylim(*(_nice_span(float((Pc - sP).min()), float((Pc + sP).max()))
-                          if fout == init
-                          else (0, _nice_top(float((Pc + sP).max()) * 1.12))))
+            lo_y, hi_y = _finite(Pc - sP), _finite(Pc + sP)
+            if lo_y.size and hi_y.size:
+                ax.set_ylim(*(_nice_span(float(lo_y.min()), float(hi_y.max()))
+                              if fout == init
+                              else (0, _nice_top(float(hi_y.max()) * 1.12))))
             ax.set_ylabel(fr"$P({panels.TEX[init]}\to{panels.TEX[fout]})$",
                           fontsize=11)
         axes[0].set_xlim(self.gui.emin, self.gui.emax)
