@@ -39,7 +39,7 @@ open an optional analysis window that uses jaxnu's automatic differentiation.
 Requires Python ≥ 3.10. `jaxnu` is not on PyPI, so install it from git.
 
 ```bash
-git clone https://github.com/YOURUSER/nuosc-explorer.git
+git clone https://github.com/lauramunteanu/nuosc-explorer.git
 cd nuosc-explorer
 
 python -m venv .venv && source .venv/bin/activate     # or: conda create -n nuosc python=3.12
